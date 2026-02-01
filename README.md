@@ -1,215 +1,143 @@
-# Digital Twin MVP - Layered Architecture
+# Digital Twin of Archit at Sara
 
-A trustworthy AI digital twin that answers questions based on your real work data (Slack, emails, docs) while refusing to hallucinate.
-
-## Architecture
-
-The system uses **8 clean layers** that mirror human reasoning:
-
-### Layer 1: Raw Memory (Ground Truth)
-- **Purpose:** Preserve truth exactly as written
-- **Module:** `layers/raw_memory.py`
-- **What it does:**
-  - Loads all .md files from `data/`
-  - Parses Slack messages with timestamps
-  - Chunks documents into logical sections
-  - Tags everything with IDs, file paths, line numbers
-- **Rule:** Never interprets. This is the source of truth.
-
-### Layer 2: Semantic Memory (Human-like Remembering)
-- **Purpose:** Speed up recall by creating summaries
-- **Module:** `layers/semantic_memory.py`
-- **What it does:**
-  - Groups raw chunks by week
-  - AI-generates concise summaries for each week
-  - Embeds summaries for routing
-  - Caches to `.cache/semantic_summaries.json`
-- **Rule:** Only for routing retrieval, never for direct answers
-
-### Layer 3: Query Understanding (Intent + Time)
-- **Purpose:** Translate vague human language into constraints
-- **Module:** `layers/query_understanding.py`
-- **What it does:**
-  - Parses "late Dec" → Dec 20-31
-  - Handles Q1/Q2/Q3/Q4 patterns
-  - Extracts key topics/keywords
-  - Assumes 2025 for missing years in this MVP
-- **Rule:** Makes queries work even when they're vague
-
-### Layer 4: Retrieval (Reading the Right Memories)
-- **Purpose:** Hierarchical retrieval - semantic first, then raw
-- **Module:** `layers/retrieval.py`
-- **What it does:**
-  1. Uses semantic memory to find relevant weeks
-  2. Pulls raw chunks from those weeks
-  3. Scores by embedding similarity + date boost
-  4. Returns top-k within context limit
-- **Rule:** Gathering context only, not answering yet
-
-### Layer 5: Evidence Extraction
-- **Purpose:** Prove every claim with exact quotes
-- **Module:** `layers/evidence_extraction.py`
-- **What it does:**
-  - AI identifies exact supporting snippets
-  - Attaches chunk IDs and timestamps
-  - Creates "receipts" for auditing
-- **Rule:** If no supporting snippets, no answer allowed
-
-### Layer 6: Verifier / Refusal Gate (Anti-Hallucination)
-- **Purpose:** Enforce honesty - the most important layer
-- **Module:** `layers/verifier_gate.py`
-- **What it does:**
-  - Checks if evidence supports the answer
-  - Generates answer only from evidence
-  - Refuses with "I do not see it" when uncertain
-  - Assigns confidence scores
-- **Rule:** No evidence = no answer. This prevents hallucinations.
-
-### Layer 7: Style Layer
-- **Purpose:** Sound like "Archit" while staying grounded
-- **Module:** `layers/style_layer.py`
-- **What it does:**
-  - Uses `data/identity.md` for style guidance
-  - Rephrases to match voice (concise, direct, Slack-style)
-  - Never overrides facts
-- **Rule:** Style is phrasing. Evidence determines content.
-
-### Layer 8: UI (Streamlit)
-- **Purpose:** Make it usable and demoable
-- **Module:** `app.py`
-- **What it does:**
-  - Chat interface
-  - Shows answer with confidence badge
-  - Displays citations with timestamps
-  - Optional debug panel showing chunks and reasoning
-- **Rule:** Makes evaluation easy for reviewers
-
-## Key Features
-
-✅ **Smart reading of messy data** - Works with informal, unlabeled, chronological messages  
-✅ **Hierarchical retrieval** - Semantic memory routes to the right time/topic  
-✅ **Evidence-based answers** - Every claim has receipts (citations with chunk IDs)  
-✅ **Refusal when uncertain** - Says "I do not see it" instead of hallucinating  
-✅ **Date-aware** - Understands "late Dec", "Q3", "around Christmas"  
-✅ **Grounded in truth** - Raw memory is immutable source of truth  
-
-## Setup
-
-1. **Install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-2. **Configure environment:**
-   Create `.env` file:
-   ```
-   OPENAI_API_KEY=your_key_here
-   TWIN_EMBED_MODEL=text-embedding-3-small
-   TWIN_GEN_MODEL=gpt-4o-mini
-   TWIN_TOP_K=6
-   TWIN_MAX_CONTEXT_CHARS=3000
-   ```
-
-3. **Add your data:**
-   Place `.md` files in `data/`:
-   - `data/identity.md` - style guide
-   - `data/dummy_slack.md` - chat logs
-   - `data/dummy_mails/*.md` - emails
-
-## Usage
-
-### CLI (Quick Testing)
-```bash
-# Basic question
-python main.py "What was I working on in late December?"
-
-# With debug info
-python main.py --debug "What happened in Q4?"
-```
-
-### Streamlit UI (Full Experience)
-```bash
-streamlit run app.py
-```
-
-Then open http://localhost:8501
-
-## Example Outputs
-
-**Question:** "What was I working on in late December?"
-
-**Answer:** "I was focused on cold start optimization and scaling infrastructure for the inference pipeline."
-
-**Confidence:** HIGH
-
-**Citations:**
-1. "worked on reducing cold start latency from 2s to 800ms" - `dummy_slack.md` - Dec 22, 2025
-2. "discussed scaling approach with CTO" - `dummy_slack.md` - Dec 28, 2025
+Live demo: https://archit-at-sara-twin.streamlit.app/
 
 ---
 
-**Question:** "What's my favorite food?"
+## Problem statement
 
-**Answer:** "I do not see it"
+The goal of this project is to build a digital twin that can represent me in a real work context and answer questions as me, based only on data that exists. The focus is not on fluency or feature completeness, but on correctness, traceability, and safety.
 
-**Confidence:** NONE
+For this take-home, I chose to model a **digital twin of myself in my current role at Sara**. The core problem I wanted to solve was intentionally strict:
 
-**Reasoning:** No supporting evidence found in the data.
+> Can a digital twin remember what I worked on, why decisions were made, and when things happened, using only real evidence and without hallucinating?
 
-## How It Prevents Hallucinations
+This aligns closely with **Viven’s core focus on preserving knowledge with its original context**, and with the principle that **wrong information is more harmful than no information**.
 
-1. **Raw Memory is immutable** - No rewriting or summarizing source data
-2. **Evidence Extraction** - Every answer must cite exact snippets
-3. **Verifier Gate** - Refuses when evidence is weak or missing
-4. **Grounded generation** - Model only sees retrieved context, not training data
-5. **Clear refusal phrase** - "I do not see it" instead of making stuff up
+---
 
-## Project Structure
+## Motivation and framing
 
-```
-digitaltwin/
-├── layers/
-│   ├── __init__.py
-│   ├── raw_memory.py          # Layer 1
-│   ├── semantic_memory.py     # Layer 2
-│   ├── query_understanding.py # Layer 3
-│   ├── retrieval.py           # Layer 4
-│   ├── evidence_extraction.py # Layer 5
-│   ├── verifier_gate.py       # Layer 6
-│   └── style_layer.py         # Layer 7
-├── data/
-│   ├── identity.md
-│   ├── dummy_slack.md
-│   └── dummy_mails/
-├── .cache/
-│   ├── embeddings.json        # (generated)
-│   └── semantic_summaries.json # (generated)
-├── twin.py                    # Orchestrator
-├── app.py                     # Layer 8: UI
-├── main.py                    # CLI
-├── requirements.txt
-└── README.md
-```
+During my conversation with Jonathan, one idea stood out clearly:  
+people should have **control over what information is shared**, and the system should not assume access to everything by default.
 
-## Why This Architecture Works
+Based on that, I made the following framing decisions, reflecting how I would choose to configure a digital twin if I were working at Sara and had the option to decide what data to share:
 
-- **Testable:** Each layer can be tested independently
-- **Transparent:** Debug mode shows exactly what each layer did
-- **Robust:** Works with messy, unstructured data
-- **Trustworthy:** Refuses instead of hallucinating
-- **Extensible:** Easy to add new layers or swap components
+- I would choose to share work communication such as Slack messages and emails, since they capture decisions and context.
+- I would intentionally not share personal documents or calendar data.
+- I would treat identity information as something the company already has during onboarding, such as role, team, manager, and start date.
 
-## Production Considerations
+This keeps the project standalone, reproducible, and privacy safe.
 
-For a real deployment:
-- Add authentication for the UI
-- Implement rate limiting
-- Store embeddings in a vector DB (Pinecone, Weaviate)
-- Add logging and monitoring
-- Implement user feedback loop for continuous improvement
-- Add more sophisticated date/time parsing
-- Support more file formats (JSON, CSV, PDFs)
+---
 
-## License
+## Design philosophy
 
-MIT
+I designed the system around how humans remember.
+
+People do not recall every message verbatim first. They remember themes, time periods, key decisions, and failures. Details are recalled later when needed.
+
+Because of this, I structured the digital twin as explicit layers, each mirroring a part of human memory and reasoning. I intentionally spent more time on system design, grounding, and safety than on UI polish.
+
+---
+
+## Data sources and assumptions
+
+The twin is grounded in three types of data:
+
+- **Slack messages**  
+  Informal, day to day communication that captures decisions and investigation context.
+
+- **Emails**  
+  Onboarding and higher level communication.
+
+- **Identity profile**  
+  Information Sara would already have during onboarding, such as role, team, manager, and start date.
+
+These sources are simulated to keep the project reproducible. The system treats them as real integrations. All data is dummy and sanitized. No real credentials or sensitive identifiers are included.
+
+---
+
+## Layered system design
+
+The system is built as a pipeline of layers, each with a single responsibility.
+
+### Layer 1: Raw memory  
+All source data is ingested as immutable chunks. Nothing is interpreted or rewritten. This is the ground truth used for citations and verification.
+
+### Layer 2: Semantic memory  
+Raw chunks are grouped by week and summarized. This layer is intentionally lossy and is used only to route retrieval.
+
+### Layer 3: Query understanding  
+User questions are parsed to extract intent and time ranges such as “late December” or “Q4 2025”.
+
+### Layer 4: Retrieval  
+Relevant weeks are selected first, then raw chunks are ranked using embeddings with time based boosts.
+
+### Layer 5: Evidence extraction  
+Exact supporting quotes are extracted verbatim from retrieved chunks and validated against the original text.
+
+### Layer 6: Verifier and refusal gate  
+This is the core safety layer.  
+If there is no evidence, the system refuses to answer.  
+If evidence exists but does not support the question, the system refuses.  
+If entailment is unclear, the system returns quotes only.
+
+### Layer 7: Style layer  
+Answers are formatted to sound like me in a work context, without adding information or changing meaning.
+
+### Layer 8: UI  
+A simple Streamlit chat interface that shows answers, confidence, citations, and optional debug information.
+
+---
+
+## Anti hallucination guarantee
+
+The central invariant of this system is:
+
+> **No evidence means no answer.**
+
+This is enforced through verbatim quote validation, entailment checks for factual questions, refusal on unsupported queries, and blocking of sensitive requests such as credentials or passwords.
+
+---
+
+## Evaluation and testing
+
+I validated the system by testing behavior at multiple levels, with a focus on correctness and refusal rather than exact wording.
+
+End to end integration tests exercise the full pipeline from query understanding through retrieval, evidence extraction, verification, and final response. These tests confirm that summary questions and fact based questions are answered only when supported by evidence, and that unsupported or ambiguous questions are refused.
+
+I also tested the verifier logic in isolation to ensure that related but non supporting evidence is rejected, while directly supporting evidence allows an answer. This validates the system’s core anti hallucination behavior.
+
+Finally, I inspected raw memory ingestion to confirm that source data is chunked correctly, timestamps are detected where expected, and chunk boundaries preserve traceability back to the original data.
+
+---
+
+## Engineering quality and reproducibility
+
+- Clear module boundaries between layers  
+- Deterministic data loading from local files  
+- No secrets committed to the repository  
+- Streamlit UI as the primary interactive experience  
+- Optional devcontainer for local or Codespaces setup  
+
+---
+
+## How I would design extensions
+
+Any extensions would follow the same structure and guarantees already in place.
+
+New data sources would be added by converting them into the same raw memory chunk format used today. The retrieval, evidence extraction, and verifier layers would remain unchanged so the system continues to answer only when evidence exists and refuse otherwise.
+
+---
+
+## Live demo
+
+You can interact with the digital twin here:  
+https://archit-at-sara-twin.streamlit.app/
+
+---
+
+## Closing note
+
+This project is intentionally scoped and opinionated. It prioritizes preserving knowledge with context, explainability, and refusal over fluency. That choice was deliberate and reflects how I understand Viven’s core mission.
