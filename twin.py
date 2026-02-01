@@ -79,41 +79,7 @@ class DigitalTwin:
                 "debug": dict (if debug=True)
             }
         """
-        # --- UI-level intents (greetings / help) ---
-        q = question.strip().lower()
-
-        greetings = {"hi", "hello", "hey"}
-        help_intents = {
-            "help",
-            "what can you do",
-            "how do you work",
-            "examples",
-            "example questions"
-        }
-
-        if q in greetings:
-            return {
-                "answer": (
-                    "Hi. You can ask me about my work, decisions, and messages. "
-                    "For example: What happened in late December around inference?"
-                ),
-                "confidence": "none",
-                "reasoning": "Greeting handled as a UI intent without using memory.",
-                "citations": [],
-            }
-
-        if q in help_intents:
-            return {
-                "answer": (
-                    "I answer questions about my work using only the data you provided. "
-                    "If I cannot find evidence, I will refuse. "
-                    "Try asking: What was I working on in Q4 2025?"
-                ),
-                "confidence": "none",
-                "reasoning": "Help intent handled as a UI intent without using memory.",
-                "citations": [],
-            }
-
+        
         # Layer 3: Parse query
         parsed_query = self.query_understanding.parse(question)
         date_range = parsed_query.get("date_range")
