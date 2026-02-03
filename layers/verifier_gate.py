@@ -52,58 +52,6 @@ class VerifierGate:
         ]
         return any(keyword in text_lower for keyword in sensitive_keywords)
 
-    def _classify_question_mode(self, question: str) -> str:
-        """
-        Classify question as "summary" or "fact".
-        Summary: broad questions about what happened, main themes, activities
-        Fact: specific questions with specific answers
-        Returns: "summary" or "fact"
-        """
-        classify_prompt = (
-            f"Classify this question as 'summary' or 'fact'.\n\n"
-            f"Summary questions ask about what happened over a period, main activities, or broad themes.\n"
-            f"Fact questions ask for specific information with a specific answer.\n\n"
-            f"Examples:\n"
-            f"'What happened in Q4?' → summary\n"
-            f"'What was I working on?' → summary\n"
-            f"'How long was cold start?' → fact\n"
-            f"'Why did we use X?' → fact\n\n"
-            f"Return ONLY JSON: {{\"mode\": \"summary\"}} or {{\"mode\": \"fact\"}}\n\n"
-            f"Question: {question}\n\n"
-            f"JSON:"
-        )
-        
-        try:
-            resp = self.client.chat.completions.create(
-                model=self.gen_model,
-                messages=[{"role": "user", "content": classify_prompt}],
-                temperature=0.0,
-                max_tokens=50,
-            )
-            output = resp.choices[0].message.content.strip()
-            
-            # Extract JSON
-            json_text = output
-            if "```json" in output:
-                json_text = output.split("```json")[1].split("```")[0].strip()
-            elif "```" in output:
-                json_text = output.split("```")[1].split("```")[0].strip()
-            
-            # Try regex fallback
-            if not json_text.startswith("{"):
-                match = re.search(r'\{[^}]*"mode"\s*:\s*"(summary|fact)"[^}]*\}', json_text, re.IGNORECASE)
-                if match:
-                    json_text = match.group(0)
-            
-            data = json.loads(json_text)
-            mode = data.get("mode", "fact")
-            return mode if mode in ["summary", "fact"] else "fact"
-            
-        except Exception:
-            # Default to fact mode (stricter)
-            return "fact"
-
-
     def _entailment_state(self, question: str, evidence_quotes: List[str]) -> str:
         """
         Check if evidence semantically supports answering the question.
