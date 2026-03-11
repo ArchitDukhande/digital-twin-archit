@@ -67,6 +67,71 @@ class DigitalTwin:
 
         print("✓ Digital Twin initialized successfully")
 
+    def _classify_mode_llm(self, question: str) -> str:
+        """
+        Use LLM to classify question as SUMMARY_MODE or FACT_MODE.
+        Provides keyword hints to guide classification.
+        
+        Returns: "SUMMARY_MODE" or "FACT_MODE"
+        """
+        # Keyword hints for LLM reference (not hardcoded rules)
+        summary_keywords = [
+            "summarize", "summary", "overview", "what happened", 
+            "what was i working on", "what did i do", "recap", "journey",
+            "highlights", "main activities", "key events"
+        ]
+        
+        fact_keywords = [
+            "how long", "how many", "why did", "when did", 
+            "who is", "where is", "what is my", "specific", 
+            "exactly", "credential", "email", "password"
+        ]
+        
+        classify_prompt = (
+            "Classify this question as 'summary' or 'fact'.\n\n"
+            "SUMMARY: Broad questions about what happened, activities over time, main themes.\n"
+            f"Common summary keywords: {', '.join(summary_keywords)}\n\n"
+            "FACT: Specific questions with a concrete answer.\n"
+            f"Common fact keywords: {', '.join(fact_keywords)}\n\n"
+            "Use these keywords as hints, but classify based on the overall intent.\n"
+            "Return ONLY one word: summary OR fact\n\n"
+            f"Question: {question}\n\n"
+            "Answer:"
+        )
+        
+        try:
+            resp = self.client.chat.completions.create(
+                model=self.gen_model,
+                messages=[{"role": "user", "content": classify_prompt}],
+                temperature=0.0,
+                max_tokens=10,
+            )
+            result = resp.choices[0].message.content.strip().lower()
+            
+            # Parse response
+            if "summary" in result:
+                return "SUMMARY_MODE"
+            elif "fact" in result:
+                return "FACT_MODE"
+            else:
+                # Default to FACT_MODE (stricter) if unclear
+                return "FACT_MODE"
+        except Exception:
+            # On failure, default to FACT_MODE (stricter)
+            return "FACT_MODE"
+
+    def _determine_answer_mode(self, question: str, date_range) -> str:
+        """
+        Determine answer mode using LLM classification with keyword hints.
+        
+        The LLM always decides, but we provide keyword hints for guidance.
+        No hardcoded rules - LLM interprets intent.
+        
+        Returns: "SUMMARY_MODE" or "FACT_MODE"
+        """
+        # Always use LLM to classify - it has keyword hints for reference
+        return self._classify_mode_llm(question)
+
     def answer(self, question: str, debug: bool = False) -> Dict[str, Any]:
         """
         Process a question through all layers and return grounded answer.
@@ -123,15 +188,8 @@ class DigitalTwin:
         parsed_query = self.query_understanding.parse(question)
         date_range = parsed_query.get("date_range")
 
-        # Determine answer mode: SUMMARY_MODE or FACT_MODE
-        question_lower = question.lower()
-        is_summary_mode = (
-            date_range is not None or
-            question_lower.startswith("what happened") or
-            question_lower.startswith("what was i working on") or
-            "what was i doing" in question_lower
-        )
-        answer_mode = "SUMMARY_MODE" if is_summary_mode else "FACT_MODE"
+        # Determine answer mode using HYBRID approach (rules + LLM)
+        answer_mode = self._determine_answer_mode(question, date_range)
 
         # Layer 4: Retrieve relevant chunks (ALWAYS use date_range)
         retrieval_result = self.retrieval.retrieve(
@@ -159,6 +217,7 @@ class DigitalTwin:
         # Add debug info if requested
         if debug:
             final_result["debug"] = {
+                "answer_mode": answer_mode,  # SUMMARY_MODE or FACT_MODE
                 "parsed_query": parsed_query,
                 "retrieval_metadata": retrieval_result["metadata"],
                 "retrieved_chunks": [
