@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from layers.raw_memory import RawMemory
-from layers.semantic_memory import SemanticMemory
+from layers.keyword_memory import KeywordMemory
 from layers.query_understanding import QueryUnderstanding
 from layers.retrieval import Retrieval
 from layers.evidence_extraction import EvidenceExtraction
@@ -36,8 +36,8 @@ class DigitalTwin:
         print("Initializing Layer 1: Raw Memory...")
         self.raw_memory = RawMemory(data_dir)
 
-        print("Initializing Layer 2: Semantic Memory...")
-        self.semantic_memory = SemanticMemory(
+        print("Initializing Layer 2: Keyword Memory...")
+        self.keyword_memory = KeywordMemory(
             self.raw_memory,
             self.client,
             self.embed_model,
@@ -45,12 +45,16 @@ class DigitalTwin:
         )
 
         print("Initializing Layer 3: Query Understanding...")
-        self.query_understanding = QueryUnderstanding(default_year=2025)
+        self.query_understanding = QueryUnderstanding(
+            default_year=2025,
+            client=self.client,
+            gen_model=self.gen_model,
+        )
 
         print("Initializing Layer 4: Retrieval...")
         self.retrieval = Retrieval(
             self.raw_memory,
-            self.semantic_memory,
+            self.keyword_memory,
             self.client,
             self.embed_model,
             self.top_k
@@ -132,10 +136,13 @@ class DigitalTwin:
         # Always use LLM to classify - it has keyword hints for reference
         return self._classify_mode_llm(question)
 
-    def answer(self, question: str, debug: bool = False) -> Dict[str, Any]:
+    def answer(self, question: str, debug: bool = False, step_callback=None) -> Dict[str, Any]:
         """
         Process a question through all layers and return grounded answer.
-        
+
+        step_callback(step_name: str, data: dict) is called after each major
+        layer so the UI can render live progress without polling.
+
         Returns:
             {
                 "answer": str,
@@ -145,6 +152,12 @@ class DigitalTwin:
                 "debug": dict (if debug=True)
             }
         """
+        def _step(name: str, data: dict) -> None:
+            if step_callback:
+                try:
+                    step_callback(name, data)
+                except Exception:
+                    pass
 
         # --- UI-level intents (greetings / help) ---
         q = question.strip().lower()
@@ -187,21 +200,50 @@ class DigitalTwin:
         # Layer 3: Parse query
         parsed_query = self.query_understanding.parse(question)
         date_range = parsed_query.get("date_range")
+        _step("query_parsed", {
+            "keywords": parsed_query.get("keywords", []),
+            "rewritten": parsed_query.get("rewritten_query", question),
+            "date_range": str(date_range) if date_range else None,
+            "topics": parsed_query.get("topics", []),
+        })
 
         # Determine answer mode using HYBRID approach (rules + LLM)
         answer_mode = self._determine_answer_mode(question, date_range)
+        _step("mode", {"answer_mode": answer_mode})
 
         # Layer 4: Retrieve relevant chunks (ALWAYS use date_range)
         retrieval_result = self.retrieval.retrieve(
             question,
             date_range=date_range,
-            max_context_chars=self.max_context_chars
+            max_context_chars=self.max_context_chars,
+            keywords=parsed_query.get("keywords"),
+            rewritten_query=parsed_query.get("rewritten_query"),
         )
 
         retrieved_chunks = retrieval_result["chunks"]
+        _step("retrieved", {
+            "weeks": retrieval_result["metadata"].get("relevant_weeks", []),
+            "candidates": retrieval_result["metadata"].get("total_candidates", 0),
+            "selected": retrieval_result["metadata"].get("selected_count", 0),
+            "keyword_str": retrieval_result["metadata"].get("keyword_str", ""),
+            "chunks": [
+                {
+                    "id": it["chunk"]["id"],
+                    "score": round(it["score"], 3),
+                    "preview": it["chunk"]["text"][:120],
+                }
+                for it in retrieved_chunks[:5]
+            ],
+        })
 
         # Layer 5: Extract evidence
         evidence = self.evidence_extraction.extract(question, retrieved_chunks, answer_mode)
+
+        _step("evidence", {
+            "has_evidence": evidence.get("has_evidence", False),
+            "count": len(evidence.get("evidence", [])),
+            "quotes": [ev["quote"][:140] for ev in evidence.get("evidence", [])[:4]],
+        })
 
         # Layer 6: Generate answer with verification
         answer_result = self.verifier_gate.generate_answer(
@@ -213,12 +255,22 @@ class DigitalTwin:
 
         # Layer 7: Apply style
         final_result = self.style_layer.apply_style(answer_result)
+        _step("answer_ready", {
+            "confidence": final_result.get("confidence", "unknown"),
+            "answer_mode": answer_mode,
+            "citation_count": len(final_result.get("citations", [])),
+        })
 
         # Add debug info if requested
         if debug:
             final_result["debug"] = {
                 "answer_mode": answer_mode,  # SUMMARY_MODE or FACT_MODE
-                "parsed_query": parsed_query,
+                "parsed_query": {
+                    "date_range": str(parsed_query.get("date_range")),
+                    "keywords": parsed_query.get("keywords"),
+                    "rewritten_query": parsed_query.get("rewritten_query"),
+                    "topics": parsed_query.get("topics"),
+                },
                 "retrieval_metadata": retrieval_result["metadata"],
                 "retrieved_chunks": [
                     {

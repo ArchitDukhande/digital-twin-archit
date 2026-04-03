@@ -1,16 +1,20 @@
 """
 Layer 3: Query Understanding (intent + time)
 Translates vague human language into concrete search constraints.
-Handles phrases like "late Dec", "Q3", "around Christmas", etc.
+The LLM rewrites the query into search keywords — strictly from the
+question itself, no hallucination of external facts.
 """
 import re
-from datetime import datetime, date, timedelta
-from typing import Optional, Tuple, List
+import json
+from datetime import datetime, timedelta
+from typing import Optional, Tuple, List, Dict, Any
 
 
 class QueryUnderstanding:
-    def __init__(self, default_year: int = 2025):
+    def __init__(self, default_year: int = 2025, client=None, gen_model: str = "gpt-4o-mini"):
         self.default_year = default_year
+        self.client = client
+        self.gen_model = gen_model
         self.month_map = {m.lower(): i + 1 for i, m in enumerate((
             "january", "february", "march", "april", "may", "june",
             "july", "august", "september", "october", "november", "december"
@@ -106,20 +110,60 @@ class QueryUnderstanding:
         return None
 
     def extract_topics(self, query: str) -> List[str]:
-        """Extract key topics/keywords from query."""
-        # Simple keyword extraction (can be enhanced with NLP)
+        """Extract key topics/keywords from query (simple fallback)."""
         stop_words = {"what", "when", "where", "who", "how", "why", "was", "were", "did", "do", "does",
                       "the", "a", "an", "in", "on", "at", "to", "for", "of", "and", "or", "i", "you",
                       "my", "your", "late", "early", "mid"}
-        
         words = re.findall(r'\b\w+\b', query.lower())
         topics = [w for w in words if w not in stop_words and len(w) > 2]
-        return topics[:5]  # top 5 keywords
+        return topics[:5]
+
+    def rewrite_for_search(self, query: str) -> Dict[str, Any]:
+        """
+        Use LLM to rewrite the query into search keywords.
+        Strict rule: only extract/normalise terms present in the query.
+        Never add external facts or hallucinate context.
+        Falls back to simple extraction when LLM is unavailable.
+        """
+        if not self.client:
+            return {"keywords": self.extract_topics(query), "rewritten": query}
+
+        prompt = (
+            "Rewrite the question below into 3-8 search keywords.\n"
+            "Rules:\n"
+            "- Return ONLY JSON: {\"keywords\": [...], \"rewritten\": \"...\"}\n"
+            "- Keywords must come from the question itself; do NOT add external facts.\n"
+            "- Normalise: plurals → singular, common synonyms → canonical form.\n"
+            "- rewritten: a concise version of the question for dense embedding.\n\n"
+            f"Question: {query}\n\nJSON:"
+        )
+        try:
+            resp = self.client.chat.completions.create(
+                model=self.gen_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                max_tokens=150,
+            )
+            content = resp.choices[0].message.content.strip()
+            json_match = re.search(r'\{.*?\}', content, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group(0))
+                keywords = [str(k).lower().strip() for k in data.get("keywords", []) if k]
+                rewritten = str(data.get("rewritten", query)).strip() or query
+                return {"keywords": keywords, "rewritten": rewritten}
+        except Exception:
+            pass
+        return {"keywords": self.extract_topics(query), "rewritten": query}
 
     def parse(self, query: str) -> dict:
-        """Parse query into structured intent."""
+        """Parse query into structured intent including LLM-rewritten search keywords."""
+        date_range = self.parse_date_range(query)
+        topics = self.extract_topics(query)
+        search_intent = self.rewrite_for_search(query)
         return {
             "query": query,
-            "date_range": self.parse_date_range(query),
-            "topics": self.extract_topics(query),
+            "date_range": date_range,
+            "topics": topics,
+            "keywords": search_intent["keywords"],
+            "rewritten_query": search_intent["rewritten"],
         }

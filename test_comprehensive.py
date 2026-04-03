@@ -2,7 +2,6 @@
 Comprehensive tests for Digital Twin anti-hallucination and question understanding.
 Tests both SUMMARY_MODE and FACT_MODE with entailment verification.
 """
-import os
 from twin import DigitalTwin
 
 

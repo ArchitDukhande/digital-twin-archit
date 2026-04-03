@@ -68,31 +68,25 @@ The system is implemented as a pipeline of layers, each with a single responsibi
 
 ## Layer 1: Raw Memory
 
-All source data is ingested as immutable chunks. Nothing is interpreted or rewritten at this stage. This layer acts as the ground truth used for verification and citations.
+All source data is ingested as immutable chunks. Slack messages, emails, and documents are each parsed with dedicated logic that extracts timestamps and metadata. Nothing is interpreted or rewritten at this stage. This layer acts as the ground truth used for verification and citations.
 
 ---
 
-## Layer 2: Semantic Memory
+## Layer 2: Keyword Memory
 
-Raw chunks are grouped by week and summarized. This layer is intentionally lossy and is used only to guide retrieval by identifying relevant time periods.
+Keywords are extracted from every chunk using an LLM and aggregated per week. Week-level keyword embeddings are used only for routing to narrow the candidate pool. Per-chunk keyword embeddings drive the actual ranking in retrieval. No summaries are generated.
 
 ---
 
 ## Layer 3: Query Understanding
 
-User questions are parsed to extract intent and time signals such as:
-
-- “late December”
-- “Q4 2025”
-- “during onboarding”
-
-These signals help narrow the search space before retrieval.
+User questions are parsed to extract time signals such as “late December”, “Q4 2025”, or “during onboarding”. The query is also rewritten by an LLM into optimized search keywords, strictly derived from the question itself.
 
 ---
 
 ## Layer 4: Retrieval
 
-Relevant weeks are selected first. Raw chunks are then ranked using embeddings combined with time based boosts to prioritize contextually relevant information.
+Two-level keyword-based retrieval. Relevant weeks are selected first via keyword embedding similarity. Candidate chunks are then scored using a blend of keyword similarity and full-text embedding similarity, with boosts for date range matches and identity queries.
 
 ---
 
@@ -120,12 +114,12 @@ Answers are formatted to sound like me in a professional work context. This laye
 
 ## Layer 8: User Interface
 
-A simple Streamlit chat interface allows interaction with the twin and shows:
+A Streamlit chat interface allows interaction with the twin. While the pipeline runs, live status lines show progress layer by layer. The final view includes:
 
 - generated answers
 - supporting citations
 - confidence score
-- optional debugging information
+- collapsible debugging information
 
 The UI is intentionally minimal because the focus of the project is system architecture.
 

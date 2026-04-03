@@ -6,7 +6,7 @@ This is the source of truth for citations and evidence.
 import re
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-from datetime import datetime, date
+from datetime import datetime
 
 
 class RawMemory:
@@ -26,6 +26,8 @@ class RawMemory:
             # Parse based on file type
             if "slack" in md_path.name.lower() or "chat" in md_path.name.lower():
                 chunks = self._parse_slack_messages(text, str(md_path))
+            elif "mail" in md_path.parent.name.lower() or self._looks_like_email(text):
+                chunks = self._parse_email(text, str(md_path))
             else:
                 chunks = self._parse_document(text, str(md_path))
 
@@ -97,6 +99,56 @@ class RawMemory:
             })
 
         return messages
+
+    @staticmethod
+    def _looks_like_email(text: str) -> bool:
+        """Detect email-like files by checking for From:/To:/Subject: headers."""
+        header_count = sum(
+            1 for pattern in (r"^From:", r"^To:", r"^Subject:")
+            if re.search(pattern, text, re.MULTILINE)
+        )
+        return header_count >= 2
+
+    def _parse_email(self, text: str, file_path: str) -> List[Dict[str, Any]]:
+        """Parse an email file into a single chunk with timestamp and metadata."""
+        lines = text.splitlines()
+
+        # Extract date from first non-empty line
+        timestamp = None
+        for line in lines:
+            if line.strip():
+                timestamp = self._parse_timestamp_from_line(line)
+                if timestamp:
+                    break
+
+        # Extract email headers
+        sender = None
+        recipient = None
+        subject = None
+        for line in lines:
+            m = re.match(r"^From:\s*(.+)", line)
+            if m:
+                sender = m.group(1).strip()
+            m = re.match(r"^To:\s*(.+)", line)
+            if m:
+                recipient = m.group(1).strip()
+            m = re.match(r"^Subject:\s*(.+)", line)
+            if m:
+                subject = m.group(1).strip()
+
+        stem = Path(file_path).stem
+        return [{
+            "id": f"{stem}:email:0",
+            "file": file_path,
+            "text": text.strip(),
+            "timestamp": timestamp,
+            "start_line": 1,
+            "end_line": len(lines),
+            "type": "email",
+            "sender": sender,
+            "recipient": recipient,
+            "subject": subject,
+        }]
 
     def _parse_document(self, text: str, file_path: str) -> List[Dict[str, Any]]:
         """

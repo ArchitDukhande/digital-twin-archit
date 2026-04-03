@@ -2,22 +2,14 @@
 Layer 7: Style Layer (sound like you)
 Uses identity.md to guide tone while preserving evidence-based content.
 """
-from pathlib import Path
 from typing import Dict, Any
 from openai import OpenAI
 
 
 class StyleLayer:
-    def __init__(self, client: OpenAI, gen_model: str, identity_file: str = "data/identity.md"):
+    def __init__(self, client: OpenAI, gen_model: str):
         self.client = client
         self.gen_model = gen_model
-        self.identity_guide = ""
-        
-        # Load identity.md for style guidance
-        try:
-            self.identity_guide = Path(identity_file).read_text(encoding="utf-8")
-        except Exception:
-            self.identity_guide = "You are Archit, a concise and direct communicator."
 
     def apply_style(self, answer_result: Dict[str, Any]) -> Dict[str, Any]:
         """

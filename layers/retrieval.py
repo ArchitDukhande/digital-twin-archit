@@ -1,137 +1,171 @@
 """
-Layer 4: Retrieval (reading the right memories)
-Hierarchical retrieval: semantic memory routes to weeks, then pulls raw chunks.
+Layer 4: Retrieval — Two-level keyword-based routing
+
+Level 1 (week routing):
+  Embed query keywords → cosine similarity vs week keyword embeddings → top-3 weeks.
+  Weeks narrow the candidate pool only; they do not score messages directly.
+
+Level 2 (message ranking):
+  Cosine similarity between query keyword embedding and per-message keyword embedding.
+  Combined (0.6) with full-text cosine similarity (0.4) for precision.
+
+Strict no-hallucination: ranking is purely similarity-based; the LLM
+only touches evidence extraction and verification (later layers).
 """
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import numpy as np
 from openai import OpenAI
 
 
 class Retrieval:
-    def __init__(self, raw_memory, semantic_memory, client: OpenAI, embed_model: str, top_k: int = 6):
+    def __init__(self, raw_memory, keyword_memory, client: OpenAI, embed_model: str, top_k: int = 6):
         self.raw_memory = raw_memory
-        self.semantic_memory = semantic_memory
+        self.keyword_memory = keyword_memory
         self.client = client
         self.embed_model = embed_model
         self.top_k = top_k
 
-    def _embed_query(self, query: str) -> List[float]:
-        """Get embedding for query."""
+    def _embed(self, text: str) -> List[float]:
+        """Embed a single text string."""
+        if not text.strip():
+            return []
         try:
-            resp = self.client.embeddings.create(model=self.embed_model, input=[query])
+            resp = self.client.embeddings.create(model=self.embed_model, input=[text])
             return resp.data[0].embedding
         except Exception:
             return []
 
-    def _embed_chunks(self, chunks: List[Dict[str, Any]]) -> Dict[str, List[float]]:
-        """Get embeddings for chunks (batch)."""
-        texts = [c["text"] for c in chunks]
-        if not texts:
+    def _score_full_text(
+        self, chunks: List[Dict[str, Any]], q_emb: List[float]
+    ) -> Dict[str, float]:
+        """
+        Batch-embed chunk texts and compute cosine similarity against query.
+        Returns {chunk_id: score}.
+        """
+        if not chunks or not q_emb:
             return {}
-        
+        texts = [c["text"] for c in chunks]
         try:
             resp = self.client.embeddings.create(model=self.embed_model, input=texts)
-            embeddings = {chunks[i]["id"]: resp.data[i].embedding for i in range(len(chunks))}
-            return embeddings
+            q_np = np.array(q_emb, dtype=float)
+            scores: Dict[str, float] = {}
+            for i, chunk in enumerate(chunks):
+                c_np = np.array(resp.data[i].embedding, dtype=float)
+                sim = float(
+                    np.dot(q_np, c_np) / (np.linalg.norm(q_np) * np.linalg.norm(c_np) + 1e-9)
+                )
+                scores[chunk["id"]] = sim
+            return scores
         except Exception:
             return {}
 
-    def retrieve(self, query: str, date_range=None, max_context_chars: int = 3000) -> Dict[str, Any]:
+    def retrieve(
+        self,
+        query: str,
+        date_range=None,
+        max_context_chars: int = 3000,
+        keywords: Optional[List[str]] = None,
+        rewritten_query: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
-        Hierarchical retrieval:
-        1. Use semantic memory to find relevant weeks
-        2. Pull raw chunks from those weeks
-        3. Score and rank by relevance
-        4. Return top-k chunks within context limit
+        Two-level keyword-based retrieval.
+
+        1. Embed keyword string → week cosine similarity → top-3 weeks (routing).
+        2. Collect candidate chunks from those weeks.
+        3. Score each candidate: 0.6 × keyword_sim + 0.4 × full-text_sim.
+        4. Apply date-range and identity boosts, sort, return top-k.
         """
-        # Embed query
-        q_emb = self._embed_query(query)
-        if not q_emb:
+        # Build the search strings
+        keyword_str = " ".join(keywords) if keywords else query
+        search_text = rewritten_query or query
+
+        # Embed query keywords (for week routing + per-message keyword scoring)
+        q_kw_emb = self._embed(keyword_str)
+        # Embed full query text (for full-text reranking)
+        q_full_emb = self._embed(search_text) if search_text != keyword_str else q_kw_emb
+
+        if not q_kw_emb:
             return {"chunks": [], "metadata": {"error": "embedding failed"}}
 
-        # Step 1: Find relevant weeks via semantic memory
-        relevant_weeks = self.semantic_memory.find_relevant_weeks(q_emb, top_k=3)
-        candidate_chunk_ids = self.semantic_memory.get_chunk_ids_for_weeks(relevant_weeks)
+        # ── Level 1: Week routing ─────────────────────────────────────────────
+        relevant_weeks = self.keyword_memory.find_relevant_weeks(q_kw_emb, top_k=3)
+        candidate_ids = self.keyword_memory.get_chunk_ids_for_weeks(relevant_weeks)
 
-        # Step 2: Get raw chunks
-        candidate_chunks = []
-        for chunk_id in candidate_chunk_ids:
-            chunk = self.raw_memory.get_chunk_by_id(chunk_id)
-            if chunk:
+        # Gather candidate chunks (deduped)
+        seen_ids: set = set()
+        candidate_chunks: List[Dict[str, Any]] = []
+        for cid in candidate_ids:
+            chunk = self.raw_memory.get_chunk_by_id(cid)
+            if chunk and cid not in seen_ids:
                 candidate_chunks.append(chunk)
+                seen_ids.add(cid)
 
-        # Also add chunks from date range if specified
+        # Add date-range chunks if provided
         if date_range:
             start, end = date_range
-            time_chunks = self.raw_memory.get_chunks_by_time_range(start, end)
-            # Merge with candidates (deduplicate by ID)
-            existing_ids = {c["id"] for c in candidate_chunks}
-            for tc in time_chunks:
-                if tc["id"] not in existing_ids:
+            for tc in self.raw_memory.get_chunks_by_time_range(start, end):
+                if tc["id"] not in seen_ids:
                     candidate_chunks.append(tc)
+                    seen_ids.add(tc["id"])
 
-        # If no semantic routing worked, fall back to all chunks
+        # Fallback: search all chunks if routing returned nothing
         if not candidate_chunks:
             candidate_chunks = self.raw_memory.get_all_chunks()
+            seen_ids = {c["id"] for c in candidate_chunks}
 
-        # Always include identity.md for personal info questions
-        # Keywords that suggest the question is about personal/profile information
-        personal_keywords = ['you', 'your', 'archit', 'location', 'city', 'stay', 'live', 'where', 
-                           'email', 'contact', 'phone', 'role', 'team', 'work', 'timezone']
-        query_lower = query.lower()
-        is_personal_query = any(keyword in query_lower for keyword in personal_keywords)
-        if is_personal_query:
-            all_chunks = self.raw_memory.get_all_chunks()
-            identity_chunks = [c for c in all_chunks if 'identity.md' in c['file']]
-            existing_ids = {c["id"] for c in candidate_chunks}
-            for ic in identity_chunks:
-                if ic["id"] not in existing_ids:
+        # Always include identity.md for personal-info queries
+        personal_keywords = {
+            "you", "your", "archit", "location", "city", "stay", "live",
+            "where", "email", "contact", "phone", "role", "team", "work", "timezone",
+        }
+        combined_lower = (keyword_str + " " + search_text).lower()
+        is_personal = bool(personal_keywords & set(combined_lower.split()))
+        if is_personal:
+            for ic in self.raw_memory.get_all_chunks():
+                if "identity.md" in ic["file"] and ic["id"] not in seen_ids:
                     candidate_chunks.append(ic)
-                    existing_ids.add(ic["id"])
+                    seen_ids.add(ic["id"])
 
-        # Step 3: Score chunks
-        chunk_embeddings = self._embed_chunks(candidate_chunks)
-        q_emb_np = np.array(q_emb, dtype=float)
+        # ── Level 2: Per-message keyword scoring ─────────────────────────────
+        kw_score_list = self.keyword_memory.score_chunks_by_keywords(
+            [c["id"] for c in candidate_chunks], q_kw_emb
+        )
+        kw_scores: Dict[str, float] = dict(kw_score_list)
 
-        scores = []
+        # Full-text cosine similarity scores
+        full_scores = self._score_full_text(candidate_chunks, q_full_emb)
+
+        # ── Combined scoring & ranking ────────────────────────────────────────
+        combined = []
         for chunk in candidate_chunks:
-            if chunk["id"] not in chunk_embeddings:
-                scores.append((0.0, chunk))
-                continue
+            cid = chunk["id"]
+            kw_sim = kw_scores.get(cid, 0.0)
+            ft_sim = full_scores.get(cid, 0.0)
+            score = 0.6 * kw_sim + 0.4 * ft_sim
 
-            c_emb_np = np.array(chunk_embeddings[chunk["id"]], dtype=float)
-            sim = np.dot(q_emb_np, c_emb_np) / (np.linalg.norm(q_emb_np) * np.linalg.norm(c_emb_np) + 1e-9)
-            
-            # Boost for different contexts
-            boost = 0.0
-            
-            # Boost identity profile for personal queries
-            if is_personal_query and 'identity.md' in chunk['file']:
-                boost += 0.5
-            
-            # Boost if in date range
+            # Boost chunks that fall inside the requested date range
             if date_range and chunk.get("timestamp"):
-                start, end = date_range
-                if start <= chunk["timestamp"] <= end:
-                    boost += 0.3
+                s, e = date_range
+                if s <= chunk["timestamp"] <= e:
+                    score += 0.2
 
-            scores.append((sim + boost, chunk))
+            # Boost identity.md for personal queries
+            if is_personal and "identity.md" in chunk["file"]:
+                score += 0.4
 
-        # Sort by score
-        scores.sort(key=lambda x: x[0], reverse=True)
+            combined.append((score, chunk))
 
-        # Step 4: Select top-k within context limit
-        selected = []
+        combined.sort(key=lambda x: x[0], reverse=True)
+
+        # ── Select top-k within context budget ───────────────────────────────
+        selected: List[Dict[str, Any]] = []
         total_chars = 0
-        for score, chunk in scores:
+        for score, chunk in combined:
             if len(selected) >= self.top_k:
                 break
             if total_chars + len(chunk["text"]) > max_context_chars:
                 break
-            selected.append({
-                "chunk": chunk,
-                "score": score,
-            })
+            selected.append({"chunk": chunk, "score": score})
             total_chars += len(chunk["text"])
 
         return {
@@ -141,5 +175,9 @@ class Retrieval:
                 "selected_count": len(selected),
                 "total_chars": total_chars,
                 "relevant_weeks": [w.get("week") for w in relevant_weeks],
-            }
+                "keyword_str": keyword_str,
+                "rewritten_query": search_text,
+            },
         }
+
+
